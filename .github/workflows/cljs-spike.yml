@@ -1,0 +1,58 @@
+name: CLJS spike checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  cljs-spike:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+      - name: Set up Java
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: '21.0.13'
+      - name: Set up Clojure CLI
+        uses: DeLaGuardo/setup-clojure@6d46099eae24853c33c0482f2bb54edf4f1a4c74 # 13.7.0
+        with:
+          cli: 1.12.6.1673
+      - name: Install npm dependencies
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/cljs-spike-logs"
+          npm ci 2>&1 | tee "$RUNNER_TEMP/cljs-spike-logs/npm-ci.log"
+      - name: Run nbb checks
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run test:cljs 2>&1 | tee "$RUNNER_TEMP/cljs-spike-logs/nbb-tests.log"
+      - name: Run JVM checks
+        shell: bash
+        run: |
+          set -o pipefail
+          clojure -M:cljs-spike -m heretic.cljs.test-runner 2>&1 | tee "$RUNNER_TEMP/cljs-spike-logs/jvm-tests.log"
+      - name: Upload check logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cljs-spike-logs
+          path: ${{ runner.temp }}/cljs-spike-logs/
+          retention-days: 14
+          if-no-files-found: warn

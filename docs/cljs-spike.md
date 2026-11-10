@@ -33,6 +33,13 @@ parent's deadline for non-yielding processes. Test logs are temporary local
 outputs; production calls retain their stdout/stderr files in the requested
 log directory.
 
+## Continuous integration
+
+The CLJS spike workflow runs the three checks above on pull requests targeting
+`main` and pushes to `main`. It uploads the command logs as a workflow artifact
+for 14 days. These checks cover the experimental backend; they do not run the
+full upstream suite or establish qualification eligibility.
+
 ## Discover and apply a mutation
 
 ```sh
