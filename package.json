@@ -1,0 +1,11 @@
+{
+  "name": "heretic-cljs-spike",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {"node": "22.23.3"},
+  "scripts": {
+    "test:cljs": "nbb -cp src:test test/heretic/cljs/runner_test.cljs",
+    "worker:cljs": "nbb -cp src scripts/nbb-runner.cljs"
+  },
+  "devDependencies": {"nbb": "1.4.207"}
+}

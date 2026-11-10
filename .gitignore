@@ -42,6 +42,11 @@ docs/babel-adapter.md
 # Sandboxed mutation runs (heretic.sandbox)
 .heretic-sandbox/
 
+# Experimental CLJS worker dependencies and local evidence
+node_modules/
+.heretic-cljs/
+.ημ/
+
 # Vendored G2/G3 validation targets + experiment scratch (local reproducers, not committed)
 validation/medley/
 validation/honeysql/
