@@ -35,8 +35,8 @@ log directory.
 
 ## Continuous integration
 
-The CLJS spike workflow runs the three checks above on pull requests targeting
-`main` and pushes to `main`. It uploads the command logs as a workflow artifact
+The CLJS spike workflow runs the three checks above on pull requests and on
+pushes to `main`. It uploads the command logs as a workflow artifact
 for 14 days. These checks cover the experimental backend; they do not run the
 full upstream suite or establish qualification eligibility.
 
