@@ -272,6 +272,58 @@
         (is (= [] (:candidates result)))
         (is (= "resolution failed" (:message result)))))))
 
+(deftest auto-gensym-is-not-reader-dispatch
+  (let [source "(defmacro m [] `(let [x# 1] (+ x# 1)))\n(defn f [x] (+ x 1))"
+        result (discover source)]
+    (is (= :ok (:status result)))
+    (is (= ["+"] (mapv :original (:candidates result)))))
+  (is (= :ok (:status (discover "(def x# 1)\n(+ 1 2)"))))
+  (is (= :parse-error (:status (discover "#_ #foo (+ 1 2)"))))
+  (is (= :parse-error (:status (discover "(def x #foo)")))))
+
+(deftest identity-printing-ignores-caller-printer-bindings
+  (let [source "(defn f [] (+ 1 nil))"
+        opts {:path "x.cljs" :source source :operators [:swap-plus-minus :replace-nil-empty-str]}
+        plain (discovery/discover-source opts)
+        bound (binding [*print-length* 1
+                        *print-level* 1
+                        *print-readably* false
+                        *print-dup* true
+                        *print-meta* true
+                        *print-namespace-maps* true]
+                (discovery/discover-source opts))
+        nil-site (first (filter #(= "nil" (:original %)) (:candidates bound)))]
+    (is (= :ok (:status plain) (:status bound)))
+    (is (= (:candidates plain) (:candidates bound)))
+    (is (= "\"\"" (:replacement nil-site)))
+    (is (= "(defn f [] (+ 1 \"\"))"
+           (binding [*print-readably* false]
+             (discovery/apply-candidate {:source source :candidate nil-site}))))))
+
+(deftest constant-expressions-skip-call-and-thread-position
+  (doseq [source ["(-> x count (> 0))"
+                  "(->> xs (= 1))"
+                  "((and a b) x)"
+                  "(cljs.core/-> x (> 0))"
+                  "(ns demo (:require [clojure.core :as j]))\n(j/->> xs (< 1))"
+                  "(doto x (> 0))"
+                  "(cond-> x true (> 0))"]]
+    (let [result (discovery/discover-source
+                  {:path "x.cljs" :source source
+                   :operators [:replace-comparison-false :replace-comparison-true
+                               :replace-and-false :replace-or-true]})]
+      (is (= :ok (:status result)) source)
+      (is (= [] (:candidates result)) source)))
+  (let [source "(foo (< 1 2) (and a b))\n(bar (-> x (< 1)) (< 2 3))"
+        result (discovery/discover-source
+                {:path "x.cljs" :source source
+                 :operators [:replace-comparison-false :replace-and-false]})
+        sites (:candidates result)]
+    (is (= :ok (:status result)))
+    (is (= ["(< 1 2)" "(and a b)" "(< 2 3)"] (mapv :original sites)))
+    (is (= "(foo false (and a b))\n(bar (-> x (< 1)) (< 2 3))"
+           (discovery/apply-candidate {:source source :candidate (first sites)})))))
+
 (deftest nested-discard-consumes-following-reader-form
   (let [source "(ns live) #_ #_(ns ignored1) (ns ignored2) (def k ::key)"
         result (discovery/discover-source {:path "x.cljs" :source source :operators [:mutate-ns-typo]})

@@ -17,31 +17,43 @@
                         (.getBytes ^String s StandardCharsets/UTF_8))]
     (apply str (map #(format "%02x" (bit-and 0xff %)) digest))))
 
+(defn- token-boundary?
+  "A reader dispatch begins only where a new token can begin."
+  [c]
+  (or (Character/isWhitespace ^char c)
+      (contains? #{\, \( \) \[ \] \{ \} \' \` \~ \"} c)))
+
 (defn- reject-dispatch!
   "Inspect dispatch syntax outside strings, comments and character literals.
-   Discard, sets, anonymous functions and regexes are handled by rewrite-clj."
+   A hash is reader dispatch only at a token start: the beginning of the text,
+   after whitespace, a comma, a delimiter, a quote, or a closing string, and
+   immediately after a consumed discard. A hash inside a symbol, including a
+   syntax-quoted auto-gensym, is ordinary text. Discard, sets, anonymous
+   functions and regexes are handled by rewrite-clj."
   [source]
   (let [n (count source)]
-    (loop [i 0 state :code escaped? false]
+    (loop [i 0 state :code escaped? false token-start? true]
       (when (< i n)
         (let [c (.charAt ^String source i)
               next-char (when (< (inc i) n) (.charAt ^String source (inc i)))]
           (case state
-            :comment (recur (inc i) (if (#{\newline \return} c) :code :comment) false)
-            :string (cond escaped? (recur (inc i) :string false)
-                          (= c \\) (recur (inc i) :string true)
-                          (= c \") (recur (inc i) :code false)
-                          :else (recur (inc i) :string false))
+            :comment (let [newline? (#{\newline \return} c)]
+                       (recur (inc i) (if newline? :code :comment) false newline?))
+            :string (cond escaped? (recur (inc i) :string false false)
+                          (= c \\) (recur (inc i) :string true false)
+                          (= c \") (recur (inc i) :code false true)
+                          :else (recur (inc i) :string false false))
             :code (cond
-                    (= c \;) (recur (inc i) :comment false)
-                    (= c \") (recur (inc i) :string false)
+                    (= c \;) (recur (inc i) :comment false false)
+                    (= c \") (recur (inc i) :string false false)
                     ;; The first character of a character literal is always consumed.
-                    (= c \\) (recur (min n (+ i 2)) :code false)
-                    (= c \#) (cond
-                                (= next-char \_) (recur (+ i 2) :code false)
-                                (#{\{ \( \"} next-char) (recur (inc i) :code false)
-                                :else (throw (ex-info "Unsupported reader dispatch" {:offset i})))
-                    :else (recur (inc i) :code false))))))))
+                    (= c \\) (recur (min n (+ i 2)) :code false true)
+                    (and (= c \#) token-start?)
+                    (cond
+                      (= next-char \_) (recur (+ i 2) :code false true)
+                      (#{\{ \( \"} next-char) (recur (inc i) :code false true)
+                      :else (throw (ex-info "Unsupported reader dispatch" {:offset i})))
+                    :else (recur (inc i) :code false (token-boundary? c)))))))))
 
 (defn- children [loc]
   (when-let [child (z/down loc)]
@@ -157,20 +169,48 @@
       (= \newline (.charAt ^String source i)) (recur (inc i) (inc l))
       :else (recur (inc i) l))))
 
+(defn- canonical-pr
+  "Print one complete readable value, independent of caller printer bindings."
+  [x]
+  (binding [*print-length* nil
+            *print-level* nil
+            *print-readably* true
+            *print-dup* false
+            *print-meta* false
+            *print-namespace-maps* false]
+    (pr-str x)))
+
 (defn- fingerprint [candidate]
-  (sha256 (pr-str [:heretic.cljs/candidate-v2
-                   (:path candidate) (:source-sha256 candidate)
-                   (:operator candidate) (:original candidate) (:replacement candidate)
-                   (:line candidate) (:column candidate) (:form-id candidate)
-                   (:coord candidate) (:form-index candidate) (:offset candidate)])))
+  (sha256 (canonical-pr [:heretic.cljs/candidate-v2
+                         (:path candidate) (:source-sha256 candidate)
+                         (:operator candidate) (:original candidate) (:replacement candidate)
+                         (:line candidate) (:column candidate) (:form-id candidate)
+                         (:coord candidate) (:form-index candidate) (:offset candidate)])))
 
 (def ^:private expression-operators
   #{:replace-comparison-false :replace-comparison-true :replace-and-false :replace-or-true})
 
-(defn- target-loc [loc op]
+;; Replacing one of these calls with true/false puts that constant in operator
+;; position: the call is the head of its parent, or a threading macro will
+;; insert the threaded value as the new first argument.
+(def ^:private threading-heads
+  '#{-> ->> some-> some->> cond-> cond->> doto ..})
+
+(defn- call-position? [parent context]
+  (let [grand (z/up parent)]
+    (and grand
+         (= :list (z/tag grand))
+         (or (nil? (z/left parent))
+             (boolean (threading-heads (core-head (head-symbol grand) context)))))))
+
+(defn- target-loc [loc op context]
   (if (expression-operators (:id op))
     (let [parent (z/up loc)]
-      (when (and parent (= :list (z/tag parent)) (nil? (z/left loc))) parent))
+      (when (and parent
+                 (= :list (z/tag parent))
+                 (nil? (z/left loc))
+                 (not (call-position? parent context)))
+        parent))
     loc))
 
 (defn- candidate [path source digest form-index form loc op]
@@ -178,7 +218,7 @@
         original (z/string loc)
         offset (offset-at source line column)
         replacement (if (string? (:replacement op))
-                      (pr-str (:replacement op))
+                      (canonical-pr (:replacement op))
                       (ops/apply-operator op loc))
         result {:path path :source-sha256 digest :operator (:id op)
                 :original original :replacement replacement
@@ -214,7 +254,7 @@
                            :when (= :token (z/tag loc))
                            op selected
                            :when ((:matcher op) loc)
-                           :let [target (target-loc loc op)]
+                           :let [target (target-loc loc op context)]
                            :when target]
                        (candidate path source digest form-index form target op)))]
       {:status :ok :source-sha256 digest :candidates sites})
