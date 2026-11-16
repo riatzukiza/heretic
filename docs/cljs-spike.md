@@ -64,16 +64,31 @@ build an immutable inventory before creating any mutated file:
   (discovery/apply-candidate {:source source :candidate candidate}))
 ```
 
-Fingerprints are SHA-256 over the `candidate-v2` record containing the normalized
-relative path, whole-source digest, location, top-level `:form-index`, operator, and exact edit. The
+Fingerprints are SHA-256 of one canonical printed vector:
+
+```clojure
+[:heretic.cljs/candidate-v2
+ path source-sha256 operator original replacement
+ line column form-id coord form-index offset]
+```
+
+Every field in that vector is part of the identity, including `:form-id`,
+`:coord`, and `:offset`. `:form-id` is the Clojure `hash` of the top-level form
+text. `:coord` is the upstream coordinate mapper's string. A change to either
+algorithm changes every fingerprint without a version bump, so both are
+identity, not diagnostics. The `:form-id`/`:coord` pair alone can still collide
+for repeated forms and must not be passed to the upstream JVM mutation engine
+as an authoritative address. Use the fingerprint together with
+`resolve-candidate` / `apply-candidate`. Printing binds `*print-length*` and
+`*print-level*` to nil, `*print-readably*` to true, `*print-dup*` and
+`*print-meta*` to false, and `*print-namespace-maps*` to false, so the digest
+and a string replacement do not follow the caller's printer settings. The
 random UUIDs used by upstream discovery do not enter this identity. Applying a
 candidate rediscovers and checks the complete candidate, rejecting changed
 source or altered candidate fields. `resolve-candidate` returns exactly the
 zipper at that indexed form and source offset; applying returns text and performs
-no file write. The retained upstream `:form-id`/`:coord` pair is diagnostic and
-can collide for repeated forms. Use the new resolver/apply API, not the upstream
-JVM site's lookup, with these records. Candidate-v1 fingerprints from earlier
-experiments must be retained with that earlier producer revision.
+no file write. Candidate-v1 fingerprints from earlier experiments must be
+retained with that earlier producer revision.
 
 The current subset supports ordinary `.cljs`/`.cljc` forms, set literals,
 anonymous functions, regex literals, and reader discard. Quoted data, comments,
@@ -89,7 +104,13 @@ rewrite-clj retains the original source nodes for edits. Invalid literal maps an
 sets are rejected before inventory creation. Namespace declarations supply the
 aliases needed to validate auto-resolved keywords. Constant-expression operators
 replace the enclosing comparison/and/or call; ordinary operators edit their
-matched token. Both paths retain exact surrounding source text.
+matched token. A constant-expression call is skipped when that call is the head
+of its parent, or when the parent is headed by a core threading form (`->`,
+`->>`, `some->`, `some->>`, `cond->`, `cond->>`, `doto`, `..`), including
+`cljs.core`/`clojure.core` qualification and aliases of those namespaces.
+Those positions would turn `true` or `false` into the operator of a call.
+Both paths retain exact surrounding source text. A `#` inside a symbol,
+including a syntax-quoted auto-gensym, is not reader dispatch.
 Keyword matching and transformations use the namespace/aliases active at that
 form. Auto-resolved originals retain their source spelling; replacements can be
 explicitly qualified to preserve the intended semantic transformation.
@@ -130,7 +151,10 @@ The parent writes the request file and appends its absolute path to `:command`.
 The response contains `:execution` (command, paths, stdout, stderr, exit,
 duration, deadline information, runtime evidence) and `:result` (the validated test outcome).
 `:log-dir` is created as needed; each invocation has separate request and
-stream files. The CLI exits 0 for a valid survived/assertion-killed observation,
+stream files. Each captured stream is read only when its file is at most 1 MiB.
+A larger file is left on disk and the result is `:invalid-test-output` with
+runtime availability `:unavailable` and reason `:overflow`; the unread text is
+not parsed. The CLI exits 0 for a valid survived/assertion-killed observation,
 1 for a failed or invalid observation, and 2 for a CLI input error. An assertion
 kill is an observed test outcome, never qualification credit.
 
@@ -148,7 +172,10 @@ outcomes. A hard timeout retains an early header if the worker emitted one.
 
 The worker loads the exact requested namespaces, waits for `cljs.test`'s
 asynchronous end event, writes one terminal `HERETIC_CLJS_RESULT` EDN line,
-then exits. Errors take precedence over assertion failures. Positive completed
+then exits. Completion events emitted while those namespaces are loading are
+ignored. The worker reinstalls its `:end-run-tests` handler after loading and
+immediately before the requested run, so a namespace `defmethod` for that event
+cannot drop the completion callback. Errors take precedence over assertion failures. Positive completed
 test and assertion counts and baseline test-count agreement are required for
 `:survived` or `:assertion-killed`. Load errors, timeouts, and invalid output are
 separate outcomes. The parent rejects missing, duplicate, nonfinal, malformed,

@@ -20,9 +20,9 @@ Expose heretic.cljs.discovery/discover-source accepting a map:
 Return:
 {:status :ok :source-sha256 <64 hex> :candidates [candidate...]}
 or {:status :parse-error :path ... :message ... :candidates []}.
-A candidate includes :fingerprint, :path, :source-sha256, :operator, :original, :replacement, :line, :column, and the zero-based :form-index that identifies its top-level occurrence.
-The upstream :form-id/:coord fields are retained as diagnostics. That pair alone is ambiguous for repeated forms and must not be passed to the upstream JVM mutation engine as an authoritative address.
-Fingerprints are deterministic SHA-256 over the candidate-v2 canonical record, including :form-index, never a random upstream UUID. Historical candidate-v1 fingerprints are not interchangeable.
+A candidate includes :fingerprint, :path, :source-sha256, :operator, :original, :replacement, :line, :column, :offset, :form-id, :coord, and the zero-based :form-index that identifies its top-level occurrence.
+:form-id (the Clojure hash of the top-level form text) and :coord (the upstream coordinate string) are part of candidate identity because the fingerprint hashes them. That pair alone is still ambiguous for repeated forms and must not be passed to the upstream JVM mutation engine as an authoritative address.
+Fingerprints are deterministic SHA-256 over the canonical printed vector [:heretic.cljs/candidate-v2 path source-sha256 operator original replacement line column form-id coord form-index offset]. Printing is unbounded and readable (*print-length* nil, *print-level* nil, *print-readably* true, *print-dup* false, *print-meta* false, *print-namespace-maps* false), including when a string replacement is formatted. The digest is never a random upstream UUID. Historical candidate-v1 fingerprints are not interchangeable.
 Expose resolve-candidate accepting {:source ... :candidate ...}; revalidate the entire candidate and return exactly the zipper at its indexed occurrence and source offset. Stale or altered locations are rejected.
 Parse failures cannot look like empty successful inventories.
 Validate supported source with a reader before discovering mutations, without evaluation. Odd maps, duplicate map keys, duplicate set members, malformed nested/discarded forms, and other reader failures are parse errors. Track namespace aliases for auto-resolved keywords rather than validating under an unrelated namespace.
@@ -34,7 +34,7 @@ Core form recognition is syntactic: it includes unqualified names, explicit `clj
 Return exact original/replacement source representations and preserve the original file bytes outside the one edit.
 Positions and edits must work with LF, CRLF, bare CR, and mixed line endings.
 Keyword operators use the namespace and aliases in effect at each source form, including multiple namespace declarations. Original auto-resolved spelling is retained in :original; replacements may use explicit qualification. Rewrite-clj placeholder namespaces must never enter a replacement.
-The four upstream constant-expression operators (:replace-comparison-false, :replace-comparison-true, :replace-and-false, :replace-or-true) replace the whole enclosing call when their matcher identifies its head. Non-head symbol occurrences are not eligible. A constant-expression edit must never create a call to true or false.
+The four upstream constant-expression operators (:replace-comparison-false, :replace-comparison-true, :replace-and-false, :replace-or-true) replace the whole enclosing call when their matcher identifies its head. Non-head symbol occurrences are not eligible. A constant-expression edit must never create a call to true or false. Skip the enclosing call when it is the head of its parent, or when that parent is headed by a core threading form (->, ->>, some->, some->>, cond->, cond->>, doto, ..), including cljs.core/clojure.core qualification and aliases. A hash inside a symbol, including a syntax-quoted auto-gensym, is not reader dispatch.
 Expose apply-candidate accepting {:source ... :candidate ...}; return a new source string or reject stale source/candidate identity. Do not write the caller's source file.
 Add a Clojure CLI only after the pure API works; it may read a file and print EDN.
 
@@ -60,7 +60,7 @@ Result:
  :completed? boolean :tests integer :assertions integer :failures integer :errors integer
  :test-namespaces [symbol ...] :qualification-eligible? false}
 Extra diagnostic fields are allowed; the parent must reject absent/duplicate/malformed result markers.
-A completion record is emitted only after cljs.test's asynchronous end-run event.
+A completion record is emitted only after cljs.test's asynchronous end-run event for the requested run. Events emitted while requested namespaces are loading are ignored. The worker reinstalls its :end-run-tests handler after loading and immediately before that run, so a requested namespace cannot replace the completion callback.
 A thrown/rejected test error dominates assertion failures.
 A positive completed count with assertions, zero errors, matching expected test count, and failures > 0 is :assertion-killed; this remains exploratory and never qualification credit.
 A positive completed count with assertions, zero errors, matching expected count, and zero failures is :survived.
@@ -73,7 +73,7 @@ Async timeout is incomplete. The parent enforces a separate hard process deadlin
 Discovery: repeatable IDs; exactly one changed expression; quotation/comment/data exclusions; malformed source and odd map literals; unsupported reader constructs; stale source rejection; repeated-form resolution and forged-index rejection.
 Worker: sync pass; assertion failure; thrown error; mixed failure and error; async completion awaited; async never completes; missing namespace; zero tests; expected-count mismatch.
 Isolation: execute at least two fresh workers and verify no fixture/global state carries over.
-The parent records full stdout/stderr, command, observed runtime versions or explicit unavailability, exit, elapsed time, and timeout separately. The early runtime header can survive a later CPU-loop timeout. No process-tree containment guarantee is inferred from child exit.
+The parent records full stdout/stderr, command, observed runtime versions or explicit unavailability, exit, elapsed time, and timeout separately. Each captured stream is read only up to 1 MiB. A larger file stays on disk, is not parsed, and yields :invalid-test-output with runtime reason :overflow. The early runtime header can survive a later CPU-loop timeout. No process-tree containment guarantee is inferred from child exit.
 
 ## Integration and evidence
 
