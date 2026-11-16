@@ -18,29 +18,34 @@
 
 (def runtime-marker "HERETIC_CLJS_RUNTIME ")
 
+(defn- output-overflow? [stdout]
+  (= :heretic.extern.process/output-overflow stdout))
+
 (defn runtime-observation
   "Extract unambiguous worker-reported versions; absence is explicit."
   [stdout]
-  (let [lines (filter #(str/starts-with? % runtime-marker)
-                      (str/split-lines (or stdout "")))
-        unavailable (fn [reason] {:availability :unavailable
-                                  :provenance :worker-reported :reason reason})]
-    (cond
-      (empty? lines) (unavailable :missing)
-      (not= 1 (count lines)) (unavailable :duplicate)
-      :else
-      (try
-        (let [value (one-edn (subs (first lines) (count runtime-marker)))
-              node-version (:node-version value)
-              nbb-version (:nbb-version value)]
-          (if (and (map? value)
-                   (= :heretic.cljs/runtime-v1 (:schema value))
-                   (string? node-version) (re-matches #"v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?" node-version)
-                   (string? nbb-version) (re-matches #"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?" nbb-version))
-            {:availability :observed :provenance :worker-reported
-             :node-version node-version :nbb-version nbb-version}
-            (unavailable :malformed)))
-        (catch #?(:clj Exception :cljs :default) _ (unavailable :malformed))))))
+  (if (output-overflow? stdout)
+    {:availability :unavailable :provenance :worker-reported :reason :overflow}
+    (let [lines (filter #(str/starts-with? % runtime-marker)
+                        (str/split-lines (or stdout "")))
+          unavailable (fn [reason] {:availability :unavailable
+                                    :provenance :worker-reported :reason reason})]
+      (cond
+        (empty? lines) (unavailable :missing)
+        (not= 1 (count lines)) (unavailable :duplicate)
+        :else
+        (try
+          (let [value (one-edn (subs (first lines) (count runtime-marker)))
+                node-version (:node-version value)
+                nbb-version (:nbb-version value)]
+            (if (and (map? value)
+                     (= :heretic.cljs/runtime-v1 (:schema value))
+                     (string? node-version) (re-matches #"v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?" node-version)
+                     (string? nbb-version) (re-matches #"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?" nbb-version))
+              {:availability :observed :provenance :worker-reported
+               :node-version node-version :nbb-version nbb-version}
+              (unavailable :malformed)))
+          (catch #?(:clj Exception :cljs :default) _ (unavailable :malformed)))))))
 
 (defn- valid-result? [request m]
   (let [{:keys [schema backend status completed? tests assertions failures errors
@@ -72,6 +77,10 @@
   "Validate the child's single terminal result against its request and execution."
   [request stdout exit-code timed-out?]
   (cond
+    ;; An overflow sentinel is not EDN. Do not parse it, including when the
+    ;; deadline also fired: the terminal record was never read.
+    (output-overflow? stdout)
+    (invalid request "Captured output exceeded the size limit")
     timed-out? (outcome/result request {:kind :timeout :message "Parent hard deadline exceeded"})
     (not (outcome/valid-request? request)) (invalid request "Invalid request")
     (not= 0 exit-code) (invalid request "Child exited unsuccessfully")

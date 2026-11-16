@@ -3,7 +3,8 @@
             [clojure.string :as str]
             [clojure.java.shell :as shell]
             [heretic.cljs.process :as process]
-            [heretic.cljs.protocol :as protocol]))
+            [heretic.cljs.protocol :as protocol]
+            [heretic.extern.process :as extern]))
 
 (def request {:schema :heretic.cljs/request-v1 :test-namespaces ['fixture.pass] :timeout-ms 500 :expected-tests 1})
 (def good {:schema :heretic.cljs/result-v1 :backend :nbb :status :assertion-killed
@@ -33,7 +34,10 @@
   (is (= :invalid-test-output (:status (parse (str "HERETIC_CLJS_RUNTIME bad\n" (subs (output good) (count runtime-header))) 0 false))))
   (is (= :invalid-test-output (:status (parse (output good) 2 false))))
   (is (= :timeout (:status (parse (output good) 0 true))))
-  (is (= :test-error (:status (parse (output (assoc good :status :test-error :errors 1 :assertions 2)) 0 false)))))
+  (is (= :test-error (:status (parse (output (assoc good :status :test-error :errors 1 :assertions 2)) 0 false))))
+  (is (= :invalid-test-output (:status (parse extern/output-overflow 0 false))))
+  (is (= :invalid-test-output (:status (parse extern/output-overflow 0 true))))
+  (is (= :overflow (:reason (protocol/runtime-observation extern/output-overflow)))))
 
 (def node (or (System/getenv "HERETIC_NODE") "node"))
 (def cli (or (System/getenv "HERETIC_NBB_CLI") "node_modules/nbb/cli.js"))
@@ -85,6 +89,24 @@
         (is (or (not (.isPresent handle)) (not (.isAlive (.get handle))))))
       (is (= :invalid-test-output (get-in r [:result :status])))
       (is (= :unknown (get-in r [:execution :containment]))))))
+
+(deftest captured-output-is-size-limited
+  (let [overflow (str (inc extern/max-captured-bytes))
+        stdout-run (invoke [node "-e" (str "process.stdout.write('x'.repeat(" overflow "));")]
+                           request 5000)
+        stdout-file (java.io.File. (get-in stdout-run [:execution :stdout-path]))
+        stderr-script (str "process.stderr.write('y'.repeat(" overflow "));"
+                           "console.log(" (pr-str (str/trim (output good))) ");")
+        stderr-run (invoke [node "-e" stderr-script] request 5000)
+        stderr-file (java.io.File. (get-in stderr-run [:execution :stderr-path]))]
+    (is (= :invalid-test-output (get-in stdout-run [:result :status])))
+    (is (= extern/output-overflow (get-in stdout-run [:execution :stdout])))
+    (is (= :overflow (get-in stdout-run [:execution :runtime :reason])))
+    (is (> (.length stdout-file) extern/max-captured-bytes))
+    (is (= :invalid-test-output (get-in stderr-run [:result :status])))
+    (is (= extern/output-overflow (get-in stderr-run [:execution :stderr])))
+    (is (string? (get-in stderr-run [:execution :stdout])))
+    (is (> (.length stderr-file) extern/max-captured-bytes))))
 
 (deftest runtime-observation-validation
   (let [observed (protocol/runtime-observation runtime-header)]

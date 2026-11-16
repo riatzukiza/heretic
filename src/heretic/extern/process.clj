@@ -5,6 +5,21 @@
 (defn- elapsed-ms [start]
   (quot (- (System/nanoTime) start) 1000000))
 
+(def output-overflow
+  "Stdout or stderr value when a capture file exceeds max-captured-bytes.
+   The file is left on disk and is not read."
+  ::output-overflow)
+
+(def max-captured-bytes
+  "Fixed per-stream capture limit. Larger logs stay on disk unread."
+  (* 1024 1024))
+
+(defn- capture [path]
+  (let [file (io/file path)]
+    (if (and (.exists file) (> (.length file) max-captured-bytes))
+      output-overflow
+      (slurp path))))
+
 (defn prepare!
   "Create unique, retained request and output paths for one invocation."
   [log-dir request]
@@ -28,7 +43,7 @@
       (.waitFor p 500 TimeUnit/MILLISECONDS))))
 
 (defn- safe-slurp [path]
-  (try (slurp path) (catch Exception _ nil)))
+  (try (capture path) (catch Exception _ nil)))
 
 (defn execute!
   "Run and capture one direct child, preserving start evidence on failure."
@@ -46,8 +61,8 @@
            :exit-code (when-not (.isAlive p) (.exitValue p))
            :timed-out? (not completed?)
            :elapsed-ms (elapsed-ms start)
-           :stdout (slurp (:stdout-path paths))
-           :stderr (slurp (:stderr-path paths))})
+           :stdout (capture (:stdout-path paths))
+           :stderr (capture (:stderr-path paths))})
         (catch Exception e
           ;; InterruptedException clears the flag. Clean up before restoring it.
           (let [interrupted? (instance? InterruptedException e)]

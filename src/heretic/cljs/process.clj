@@ -20,9 +20,15 @@
             base (merge paths {:command actual-command :directory directory :containment :unknown})]
         (try
           (let [execution (merge base (extern/execute! actual-command directory timeout-ms paths))
-                execution (assoc execution :runtime (protocol/runtime-observation (:stdout execution)))]
+                stdout (:stdout execution)
+                stderr (:stderr execution)
+                readable (if (or (= extern/output-overflow stdout)
+                                 (= extern/output-overflow stderr))
+                           extern/output-overflow
+                           stdout)
+                execution (assoc execution :runtime (protocol/runtime-observation readable))]
             {:execution execution
-             :result (protocol/validate-output request (:stdout execution)
+             :result (protocol/validate-output request readable
                                                (:exit-code execution) (:timed-out? execution))})
           (catch Exception e
             {:execution (let [execution (merge base {:spawned? false} (:execution (ex-data e))
