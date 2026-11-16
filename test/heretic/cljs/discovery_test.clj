@@ -29,10 +29,31 @@
 
 (deftest invalid-and-unsupported
   (is (= :parse-error (:status (discover "(defn broken [x] (+ x 1)"))))
-  (doseq [source ["#?(:cljs (+ 1 2) :clj (+ 2 3))" "#foo/bar (+ 1 2)" "#= (+ 1 2)"]]
+  (doseq [source ["#foo/bar (+ 1 2)" "#= (+ 1 2)" "#js 1" "##Infinity"]]
     (let [result (discover source)]
       (is (not= :ok (:status result)) source)
       (is (empty? (:candidates result)) source))))
+
+(deftest axxium-reader-forms-stay-discoverable
+  (let [source (str "(defn f [x]\n"
+                    "  #?(:clj (+ x 1) :cljs (- x 1))\n"
+                    "  (+ x 2)\n"
+                    "  #js {:n (+ x 3) :xs [(+ x 4)]}\n"
+                    "  #inst \"2020-01-01T00:00:00.000-00:00\"\n"
+                    "  #uuid \"00000000-0000-0000-0000-000000000001\"\n"
+                    "  (< ##-Inf x ##Inf))\n"
+                    "(def email #\"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$\")\n"
+                    "(def path #\"^https?://\")\n"
+                    "(def ctl #\"[\\s\\u0000-\\u001f\\u007f\\\\#]\")\n"
+                    "(def secret #\"(?i)secret|pem|token\\\"\")")
+        result (discover source)
+        plus (filterv #(= "+" (:original %)) (:candidates result))]
+    (is (= :ok (:status result)) (:message result))
+    (is (= ["+" "+" "+"] (mapv :original plus)))
+    (is (= (clojure.string/replace source "(+ x 2)" "(- x 2)")
+           (discovery/apply-candidate {:source source :candidate (first plus)}))))
+  (is (= :parse-error (:status (discover "#\"(?<=a)b\""))))
+  (is (= :parse-error (:status (discover "#\"\\p{L}\"")))))
 
 (deftest metadata-target-and-string-replacement
   (let [source "^{:tag true} (defn f [] (+ 1 nil))"

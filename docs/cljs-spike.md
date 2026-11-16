@@ -35,8 +35,8 @@ log directory.
 
 ## Continuous integration
 
-The CLJS spike workflow runs the three checks above on pull requests targeting
-`main` and pushes to `main`. It uploads the command logs as a workflow artifact
+The CLJS spike workflow runs the three checks above on pull requests and on
+pushes to `main`. It uploads the command logs as a workflow artifact
 for 14 days. These checks cover the experimental backend; they do not run the
 full upstream suite or establish qualification eligibility.
 
@@ -91,10 +91,14 @@ no file write. Candidate-v1 fingerprints from earlier experiments must be
 retained with that earlier producer revision.
 
 The current subset supports ordinary `.cljs`/`.cljc` forms, set literals,
-anonymous functions, regex literals, and reader discard. Quoted data, comments,
-namespace declarations, metadata, and recognized `def`/`defn` documentation and
-attribute maps are excluded. Reader conditionals, tagged literals, namespaced
-maps, var quote, and other unsupported dispatch forms return an explicit
+anonymous functions, regex literals, reader discard, `#js` maps and vectors,
+`#inst`, `#uuid`, reader conditionals `#?` and `#?@`, and the symbolic numbers
+`##Inf`, `##-Inf`, and `##NaN`. Quoted data, comments, namespace declarations,
+metadata, and recognized `def`/`defn` documentation and attribute maps are
+excluded. `#js` payloads are walked because the ClojureScript compiler emits
+their values as expressions. `#inst`, `#uuid`, and reader conditionals are
+parsed and then left unmutated, so a conditional's inactive branch is not an
+edit. Namespaced maps, var quote, `#=`, and other tags return an explicit
 `:parse-error`; the diagnostic identifies unsupported reader dispatch. An
 unsupported file is never reported as a successful empty inventory. This is a
 conservative source scanner, not a CLJS analyzer or coverage collector.
@@ -160,9 +164,11 @@ kill is an observed test outcome, never qualification credit.
 
 The request timeout is the worker's async deadline. The parent timeout is a
 separate process deadline and should allow time for process startup. A test
-that blocks Node's event loop is stopped by the parent. The parent currently
-terminates its direct child only and reports process-tree containment as
-`:unknown`.
+that blocks Node's event loop is stopped by the parent. The parent signals live descendants of its direct child and then the child.
+`:containment` is `:direct-child` when no descendant was visible,
+`:descendants-signaled` when at least one was, and `:unknown` when the tree
+could not be inspected or the worker was never started. A descendant that the
+child has already reparented is outside this signal. This is not a sandbox.
 
 The worker first prints one `HERETIC_CLJS_RUNTIME` EDN line with the Node and nbb
 versions observed inside that process. The parent records those values with
@@ -199,12 +205,14 @@ The initial Axxium experiment uses revision
 the frozen standard-v2 qualification profile. Details and all timing evidence
 belong in the experiment artifacts, outside source commits.
 
-Remaining adoption work includes broader reader support, dependency and async
-compatibility, test selection with evidence of coverage, baseline binding beyond
-test count, compiler-warning policy, descendant-process containment, and the
-existing Axxium ordered-campaign/evidence contract. A warm Shadow compiler is a
-separate execution option and must be compared with the same selected mutations
-and tests before choosing the production backend.
+`#js`, `#inst`, `#uuid`, reader conditionals, and `##Inf`/`##-Inf`/`##NaN` are
+now accepted by discovery. `heretic.cljs.compatibility/scan` classifies a
+checkout, and `heretic.cljs.evidence/assemble` emits a deterministic record.
+The eligibility rule and the production-admission law are in
+[the evidence note](cljs-evidence.md). Still outside this backend: nbb loading
+of HoneySQL, Closure `goog.math.Long`, bare `await`/`Fastify`, a packaged
+compiler, and Axxium Services admission. A warm Shadow compiler remains a
+separate execution option.
 
 See [the versioned spike contract](cljs-nbb-contract.md) for the request and
 response fields and acceptance criteria.

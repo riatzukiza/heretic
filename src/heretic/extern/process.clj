@@ -35,12 +35,32 @@
      :stdout-path (.getAbsolutePath stdout-file)
      :stderr-path (.getAbsolutePath stderr-file)}))
 
-(defn- stop-child! [p]
-  (when (.isAlive p)
-    (.destroy p)
-    (when-not (.waitFor p 250 TimeUnit/MILLISECONDS)
-      (.destroyForcibly p)
-      (.waitFor p 500 TimeUnit/MILLISECONDS))))
+(defn- signal-tree!
+  "Signal the child's live descendants, then the child.
+   A child that has already exited may have reparented its descendants; those
+   are no longer visible. This is best-effort process-tree signaling, not a
+   sandbox."
+  [p]
+  (let [children (fn []
+                   (try
+                     (vec (.toArray (.descendants (.toHandle p))))
+                     (catch Exception _ [])))
+        report (try
+                 (let [live (children)]
+                   (doseq [child live]
+                     (try (.destroy child) (catch Exception _)))
+                   {:descendant-count (count live)
+                    :containment (if (seq live) :descendants-signaled :direct-child)})
+                 (catch Exception _
+                   {:descendant-count nil :containment :unknown}))]
+    (when (.isAlive p)
+      (.destroy p)
+      (when-not (.waitFor p 250 TimeUnit/MILLISECONDS)
+        (doseq [child (children)]
+          (try (.destroyForcibly child) (catch Exception _)))
+        (.destroyForcibly p)
+        (.waitFor p 500 TimeUnit/MILLISECONDS)))
+    report))
 
 (defn- safe-slurp [path]
   (try (capture path) (catch Exception _ nil)))
@@ -55,25 +75,29 @@
     (.redirectError pb (io/file (:stderr-path paths)))
     (let [p (.start pb)]
       (try
-        (let [completed? (.waitFor p (long timeout-ms) TimeUnit/MILLISECONDS)]
-          (when-not completed? (stop-child! p))
-          {:spawned? true
-           :exit-code (when-not (.isAlive p) (.exitValue p))
-           :timed-out? (not completed?)
-           :elapsed-ms (elapsed-ms start)
-           :stdout (capture (:stdout-path paths))
-           :stderr (capture (:stderr-path paths))})
+        (let [completed? (.waitFor p (long timeout-ms) TimeUnit/MILLISECONDS)
+              report (signal-tree! p)]
+          (merge report
+                 {:spawned? true
+                  :exit-code (when-not (.isAlive p) (.exitValue p))
+                  :timed-out? (not completed?)
+                  :elapsed-ms (elapsed-ms start)
+                  :stdout (capture (:stdout-path paths))
+                  :stderr (capture (:stderr-path paths))}))
         (catch Exception e
           ;; InterruptedException clears the flag. Clean up before restoring it.
-          (let [interrupted? (instance? InterruptedException e)]
-            (try
-              (stop-child! p)
-              (catch InterruptedException _ (.destroyForcibly p)))
-            (let [execution {:spawned? true
-                             :exit-code (when-not (.isAlive p) (.exitValue p))
-                             :timed-out? false
-                             :elapsed-ms (elapsed-ms start)
-                             :stdout (safe-slurp (:stdout-path paths))
-                             :stderr (safe-slurp (:stderr-path paths))}]
+          (let [interrupted? (instance? InterruptedException e)
+                report (try
+                         (signal-tree! p)
+                         (catch InterruptedException _
+                           (.destroyForcibly p)
+                           {:descendant-count nil :containment :unknown}))]
+            (let [execution (merge report
+                                   {:spawned? true
+                                    :exit-code (when-not (.isAlive p) (.exitValue p))
+                                    :timed-out? false
+                                    :elapsed-ms (elapsed-ms start)
+                                    :stdout (safe-slurp (:stdout-path paths))
+                                    :stderr (safe-slurp (:stderr-path paths))})]
               (when interrupted? (.interrupt (Thread/currentThread)))
               (throw (ex-info "Worker execution failed after start" {:execution execution} e)))))))))
