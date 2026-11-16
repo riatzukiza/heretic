@@ -7,8 +7,16 @@
             [heretic.extern.nbb :as nbb]))
 
 (defonce completion-handler (atom nil))
-(defmethod test/report [::test/default :end-run-tests] [event]
-  (when-let [f @completion-handler] (f event)))
+
+(defn- install-completion-report!
+  "Own :end-run-tests. A requested namespace can defmethod the same event
+   while it loads; reinstalling immediately before the requested run keeps
+   that method from dropping the worker's completion callback."
+  []
+  (defmethod test/report [::test/default :end-run-tests] [event]
+    (when-let [f @completion-handler] (f event))))
+
+(install-completion-report!)
 
 (defn run! [request]
   (if-not (outcome/valid-request? request)
@@ -27,16 +35,19 @@
                                      :message (or (.-message %) (str %))}))
       (reset! completion-handler
               (fn [event]
-                (swap! completions conj event)
-                ;; Defer until the next turn to observe duplicate synchronous completions.
-                (nbb/later #(finish! {:kind :completed :counters (first @completions)
-                                      :completion-count (count @completions)}) 0)))
+                ;; Top-level run-tests during require is not the requested run.
+                (when (= :testing @phase)
+                  (swap! completions conj event)
+                  ;; Defer until the next turn to observe duplicate synchronous completions.
+                  (nbb/later #(finish! {:kind :completed :counters (first @completions)
+                                        :completion-count (count @completions)}) 0))))
       (reset! timer (nbb/later #(finish! {:kind :timeout}) (:timeout-ms request)))
       (-> (reduce (fn [p ns-sym]
                     (.then p #(nbb/load-code (str "(require '" (pr-str [ns-sym]) ")"))))
                   (js/Promise.resolve nil) namespaces)
           (.then (fn []
                    (when-not @finished?
+                     (install-completion-report!)
                      (reset! phase :testing)
                      (-> (nbb/load-code (pr-str (list* 'cljs.test/run-tests
                                                         (map #(list 'quote %) namespaces))))

@@ -43,6 +43,18 @@
   (is (= :invalid-test-output (:status (invoke (str (pr-str (request 'fixture.pass)) " #_ 42")))))
   (is (= :survived (:status (invoke (request 'fixture.isolation)))))
   (is (= :survived (:status (invoke (request 'fixture.isolation))))))
+(deftest load-time-completion-does-not-finish-the-run
+  (let [result (invoke {:schema :heretic.cljs/request-v1
+                        :test-namespaces ['fixture.autorun 'fixture.async-never]
+                        :timeout-ms 300
+                        :expected-tests nil})]
+    (is (= :timeout (:status result)) (pr-str result))
+    (is (false? (:completed? result)))
+    (is (false? (:qualification-eligible? result)))))
+(deftest namespace-report-method-cannot-replace-completion
+  (let [result (invoke (request 'fixture.custom-report))]
+    (is (= :survived (:status result)) (pr-str result))
+    (is (= 1 (:tests result)))))
 (deftest malformed-events
   (let [req (request 'fixture.pass)
         result #(outcome/result req %)]
