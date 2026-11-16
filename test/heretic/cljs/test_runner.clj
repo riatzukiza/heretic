@@ -1,9 +1,14 @@
 (ns heretic.cljs.test-runner
   (:require [clojure.test :as test]
+            [heretic.cljs.compatibility-test]
             [heretic.cljs.discovery-test]
+            [heretic.cljs.evidence-test]
             [heretic.cljs.process-test]))
 
 (defn -main [& _]
-  (let [result (test/run-tests 'heretic.cljs.discovery-test 'heretic.cljs.process-test)]
+  (let [result (test/run-tests 'heretic.cljs.discovery-test
+                               'heretic.cljs.process-test
+                               'heretic.cljs.compatibility-test
+                               'heretic.cljs.evidence-test)]
     (shutdown-agents)
     (System/exit (if (zero? (+ (:fail result) (:error result))) 0 1))))
