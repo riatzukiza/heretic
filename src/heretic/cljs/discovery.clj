@@ -23,6 +23,46 @@
   (or (Character/isWhitespace ^char c)
       (contains? #{\, \( \) \[ \] \{ \} \' \` \~ \"} c)))
 
+(def ^:private symbolic-literals
+  "ClojureScript symbolic numbers. The following character must end the token."
+  ["##-Inf" "##Inf" "##NaN"])
+
+(defn- symbolic-literal-end [source i]
+  (let [n (count source)]
+    (some (fn [text]
+            (let [end (+ i (count text))]
+              (when (and (<= end n)
+                         (= text (subs source i end))
+                         (or (= end n) (token-boundary? (.charAt ^String source end))))
+                end)))
+          symbolic-literals)))
+
+(def ^:private supported-dispatch-tags
+  "Tags whose following form is ordinary source. Reader conditionals are parsed
+   and then left unmutated; #js values are walked as executable expressions."
+  #{"js" "inst" "uuid" "?" "?@"})
+
+(defn- dispatch-tag
+  "Return {:tag name :end index} for a hash at i, or nil when it is not a named tag."
+  [source i]
+  (let [n (count source)
+        start (inc i)]
+    (when (< start n)
+      (let [c (.charAt ^String source start)]
+        (cond
+          (= c \?)
+          (if (and (< (inc start) n) (= \@ (.charAt ^String source (inc start))))
+            {:tag "?@" :end (+ start 2)}
+            {:tag "?" :end (inc start)})
+          (Character/isLetter c)
+          (loop [k (inc start)]
+            (if (and (< k n)
+                     (let [ch (.charAt ^String source k)]
+                       (or (Character/isLetterOrDigit ch) (contains? #{\_ \-} ch))))
+              (recur (inc k))
+              {:tag (subs source start k) :end k}))
+          :else nil)))))
+
 (defn- reject-dispatch!
   "Inspect dispatch syntax outside strings, comments and character literals.
    A hash is reader dispatch only at a token start: the beginning of the text,
@@ -49,10 +89,14 @@
                     ;; The first character of a character literal is always consumed.
                     (= c \\) (recur (min n (+ i 2)) :code false true)
                     (and (= c \#) token-start?)
-                    (cond
-                      (= next-char \_) (recur (+ i 2) :code false true)
-                      (#{\{ \( \"} next-char) (recur (inc i) :code false true)
-                      :else (throw (ex-info "Unsupported reader dispatch" {:offset i})))
+                    (let [literal-end (symbolic-literal-end source i)
+                          tag (when-not literal-end (dispatch-tag source i))]
+                      (cond
+                        (= next-char \_) (recur (+ i 2) :code false true)
+                        (#{\{ \( \"} next-char) (recur (inc i) :code false true)
+                        literal-end (recur literal-end :code false false)
+                        (supported-dispatch-tags (:tag tag)) (recur (:end tag) :code false true)
+                        :else (throw (ex-info "Unsupported reader dispatch" {:offset i}))))
                     :else (recur (inc i) :code false (token-boundary? c)))))))))
 
 (defn- children [loc]
@@ -61,14 +105,18 @@
 
 (defn- validate-regex [pattern]
   ;; Restrict advanced Java constructs; nbb supports an initial (?i) flag.
+  ;; Literal punctuation used by Axxium patterns is accepted. Escapes are the
+  ;; ones JavaScript and Java share for a literal metacharacter or class.
   ;; Each compiled pattern is a distinct object, as with the nbb reader.
   (let [body (if (str/starts-with? pattern "(?i)") (subs pattern 4) pattern)
-        stripped (str/replace body #"\\[dDsSwW./\\-]" "x")]
-    (when (or (not (re-matches #"[A-Za-z0-9_ .:%^$*+?(){}\[\]|,\-]*" stripped))
+        stripped (-> body
+                     (str/replace #"\\u[0-9a-fA-F]{4}" "x")
+                     (str/replace #"\\[dDsSwWntrf./\\^$*+?(){}\[\]|#\"-]" "x"))]
+    (when (or (not (re-matches #"[A-Za-z0-9_ .:%^$*+?(){}\[\]|,@/=;<>'&#~!\"\-]*" stripped))
               (re-find #"\(\?(?!:)" stripped)
               (re-find #"[+*?][+*?]" stripped)
               (str/includes? stripped "[:"))
-    (throw (ex-info "Unsupported regex syntax" {:pattern pattern})))
+      (throw (ex-info "Unsupported regex syntax" {:pattern pattern})))
     (re-pattern pattern)))
 
 (defn- head-symbol [loc]
@@ -97,6 +145,11 @@
               (let [parsed (edamame/parse-string-all
                             (z/string form)
                             {:all true :read-eval false
+                             :read-cond :allow :features #{:cljs}
+                             :readers {'js (fn [form]
+                                             (when-not (or (map? form) (vector? form))
+                                               (throw (ex-info "Unsupported #js form" {:form form})))
+                                             form)}
                              :auto-resolve context :regex validate-regex})
                     value (first parsed)
                     context (if (and (seq? value)
@@ -145,6 +198,10 @@
 
       :else cs)))
 
+(defn- reader-tag [loc]
+  (when (= :reader-macro (z/tag loc))
+    (some-> loc z/down z/string)))
+
 (defn- walk-executable [loc context]
   (lazy-seq
    (when loc
@@ -152,6 +209,11 @@
        (cond
          (#{:quote :syntax-quote :uneval :discard} tag) nil
          (#{'ns 'comment 'quote} head) nil
+         ;; #inst/#uuid and reader conditionals are data or alternate branches.
+         ;; #js values are compiled as expressions, so the payload is walked.
+         (and (= :reader-macro tag) (= "js" (reader-tag loc)))
+         (mapcat #(walk-executable % context) (rest (children loc)))
+         (= :reader-macro tag) nil
          ;; The last child is the annotated form; preceding children are metadata.
          (#{:meta :meta*} tag) (walk-executable (last (children loc)) context)
          :else (cons loc (mapcat #(walk-executable % context) (body-children loc head))))))))
