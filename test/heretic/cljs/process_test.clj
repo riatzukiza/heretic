@@ -49,7 +49,8 @@
     (is (= :timeout (get-in r [:result :status])))
     (is (true? (get-in r [:execution :timed-out?])))
     (is (< (get-in r [:execution :elapsed-ms]) 3000))
-    (is (= :unknown (get-in r [:execution :containment]))))
+    (is (= :direct-child (get-in r [:execution :containment])))
+    (is (= 0 (get-in r [:execution :descendant-count]))))
   (let [r (invoke [node "-e" (str "console.log(" (pr-str (str "HERETIC_CLJS_RESULT " (pr-str good))) "); while(true){} ")] request 300)]
     (is (= :timeout (get-in r [:result :status])))
     (is (true? (get-in r [:execution :timed-out?]))))
@@ -88,7 +89,7 @@
       (let [handle (java.lang.ProcessHandle/of (Long/parseLong (slurp signal)))]
         (is (or (not (.isPresent handle)) (not (.isAlive (.get handle))))))
       (is (= :invalid-test-output (get-in r [:result :status])))
-      (is (= :unknown (get-in r [:execution :containment]))))))
+      (is (= :direct-child (get-in r [:execution :containment]))))))
 
 (deftest captured-output-is-size-limited
   (let [overflow (str (inc extern/max-captured-bytes))
@@ -107,6 +108,27 @@
     (is (= extern/output-overflow (get-in stderr-run [:execution :stderr])))
     (is (string? (get-in stderr-run [:execution :stdout])))
     (is (> (.length stderr-file) extern/max-captured-bytes))))
+
+(deftest timeout-stops-a-live-descendant
+  (let [dir (logs)
+        signal (str dir "/descendant-pid")
+        code (str "const {spawn}=require('child_process');"
+                  "const child=spawn('sleep',['30']);"
+                  "require('fs').writeFileSync(" (pr-str signal) ", String(child.pid));"
+                  "while(true){}")
+        response (process/run-worker! {:command [node "-e" code]
+                                       :directory project-dir
+                                       :request request
+                                       :timeout-ms 500
+                                       :log-dir dir})]
+    (is (= :timeout (get-in response [:result :status])))
+    (is (= :descendants-signaled (get-in response [:execution :containment])))
+    (is (= 1 (get-in response [:execution :descendant-count])))
+    (is (.exists (java.io.File. signal)))
+    (Thread/sleep 200)
+    (let [pid (Long/parseLong (str/trim (slurp signal)))
+          handle (java.lang.ProcessHandle/of pid)]
+      (is (or (not (.isPresent handle)) (not (.isAlive (.get handle)))) pid))))
 
 (deftest runtime-observation-validation
   (let [observed (protocol/runtime-observation runtime-header)]
