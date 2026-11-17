@@ -5,7 +5,7 @@
 
 (defn run-worker!
   "Run a fresh worker with a hard deadline and validate its terminal record."
-  [{:keys [command directory timeout-ms request log-dir]}]
+  [{:keys [command directory timeout-ms request log-dir env]}]
   (if-not (and (outcome/valid-request? request)
                (vector? command) (seq command) (every? string? command)
                (integer? timeout-ms) (pos? timeout-ms) (<= timeout-ms Long/MAX_VALUE)
@@ -19,7 +19,7 @@
             actual-command (conj command (:request-path paths))
             base (merge paths {:command actual-command :directory directory :containment :unknown})]
         (try
-          (let [execution (merge base (extern/execute! actual-command directory timeout-ms paths))
+          (let [execution (merge base (extern/execute! actual-command directory timeout-ms paths env))
                 stdout (:stdout execution)
                 stderr (:stderr execution)
                 readable (if (or (= extern/output-overflow stdout)

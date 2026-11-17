@@ -209,10 +209,32 @@ belong in the experiment artifacts, outside source commits.
 now accepted by discovery. `heretic.cljs.compatibility/scan` classifies a
 checkout, and `heretic.cljs.evidence/assemble` emits a deterministic record.
 The eligibility rule and the production-admission law are in
-[the evidence note](cljs-evidence.md). Still outside this backend: nbb loading
-of HoneySQL, Closure `goog.math.Long`, bare `await`/`Fastify`, a packaged
-compiler, and Axxium Services admission. A warm Shadow compiler remains a
-separate execution option.
+[the evidence note](cljs-evidence.md).
+
+`heretic.cljs.nbb-runtime/prepare!` materializes HoneySQL, malli, promesa, and
+test.check sources, rewrites shadow string libspecs (`:default`, `:refer`, and
+CJS `:as`) into nbb imports, and points `NODE_PATH` at the checkout's
+`node_modules`. `heretic.cljs.nbb-prelude/install!` interns `await`,
+`ExceptionInfo`, `es6-iterator-seq`, and the test.check helpers nbb does not
+provide, and registers the ClojureScript classes HoneySQL's `extend-protocol`
+names. `goog.math.Long` is a BigInt shim. `await` inside `with-redefs` is
+rewritten to `with-redefs-fn` plus an async function, because nbb's built-in
+`with-redefs` is read-only and its expansion does not rewrite `await`. A `defn`
+is marked `^:async` only when `await` is in that function's own body. Marking
+the outer function makes it return a promise of the function it was building.
+
+A campaign runs each test namespace in its own worker and sums the counters.
+Axxium's unmutated failures, including the three in
+`axxium.extern.host-agent-identity-test`, stay in the baseline. A mutant
+survives only when its totals match that baseline. The campaign never sets
+`:qualification-eligible?` or `:production-admitted?` to true.
+
+Namespaces that still abort or fail under nbb do so for a recorded reason:
+property tests throw `Key must be integer` from `clojure.test.check.rose-tree`
+when a generated index is not an integer; some route tests throw on a null
+Fastify reply; `github-comment-test` dissocs a promise. Those are execution
+results, not hidden passes. A packaged compiler and Axxium Services admission
+remain outside this backend.
 
 See [the versioned spike contract](cljs-nbb-contract.md) for the request and
 response fields and acceptance criteria.
