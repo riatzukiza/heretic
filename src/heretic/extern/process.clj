@@ -66,10 +66,15 @@
   (try (capture path) (catch Exception _ nil)))
 
 (defn execute!
-  "Run and capture one direct child, preserving start evidence on failure."
-  [command directory timeout-ms paths]
+  "Run and capture one direct child, preserving start evidence on failure.
+   `env` is extra environment entries inherited on top of this process."
+  ([command directory timeout-ms paths]
+   (execute! command directory timeout-ms paths nil))
+  ([command directory timeout-ms paths env]
   (let [start (System/nanoTime)
         pb (ProcessBuilder. ^java.util.List command)]
+    (doseq [[k v] env]
+      (.put (.environment pb) (str k) (str v)))
     (when directory (.directory pb (io/file directory)))
     (.redirectOutput pb (io/file (:stdout-path paths)))
     (.redirectError pb (io/file (:stderr-path paths)))
@@ -100,4 +105,4 @@
                                     :stdout (safe-slurp (:stdout-path paths))
                                     :stderr (safe-slurp (:stderr-path paths))})]
               (when interrupted? (.interrupt (Thread/currentThread)))
-              (throw (ex-info "Worker execution failed after start" {:execution execution} e)))))))))
+              (throw (ex-info "Worker execution failed after start" {:execution execution} e))))))))))

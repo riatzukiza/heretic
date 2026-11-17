@@ -3,12 +3,14 @@
             [heretic.cljs.compatibility-test]
             [heretic.cljs.discovery-test]
             [heretic.cljs.evidence-test]
+            [heretic.cljs.nbb-sources-test]
             [heretic.cljs.process-test]))
 
 (defn -main [& _]
   (let [result (test/run-tests 'heretic.cljs.discovery-test
                                'heretic.cljs.process-test
                                'heretic.cljs.compatibility-test
-                               'heretic.cljs.evidence-test)]
+                               'heretic.cljs.evidence-test
+                               'heretic.cljs.nbb-sources-test)]
     (shutdown-agents)
     (System/exit (if (zero? (+ (:fail result) (:error result))) 0 1))))
